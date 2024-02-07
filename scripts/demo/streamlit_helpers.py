@@ -25,7 +25,7 @@ from scripts.util.detection.nsfw_and_watermark_dectection import \
     DeepFloydDataFiltering
 from sgm.inference.helpers import embed_watermark
 from sgm.modules.diffusionmodules.guiders import (LinearPredictionGuider,
-                                                  VanillaCFG)
+                                                  VanillaCFG, SparseVanillaCFG, ClipGuider)
 from sgm.modules.diffusionmodules.sampling import (DPMPP2MSampler,
                                                    DPMPP2SAncestralSampler,
                                                    EulerAncestralSampler,
@@ -217,11 +217,13 @@ def init_save_locally(_dir, init_value: bool = False):
 
 def get_guider(options, key):
     guider = st.sidebar.selectbox(
-        f"Discretization #{key}",
+        f"Guider #{key}",
         [
             "VanillaCFG",
+            "SparseVanillaCFG",
             "IdentityGuider",
             "LinearPredictionGuider",
+            "ClipGuider",
         ],
         options.get("guider", 0),
     )
@@ -246,6 +248,59 @@ def get_guider(options, key):
                 **additional_guider_kwargs,
             },
         }
+    elif guider == "SparseVanillaCFG":
+        scale = st.number_input(
+            f"cfg-scale #{key}",
+            value=options.get("cfg", 5.0),
+            min_value=0.0,
+        )
+
+        sigma_lower = st.number_input(
+            f"cfg-sigma-lower",
+            value=0.0,
+            min_value=0.0,
+        )
+
+        sigma_upper = st.number_input(
+            f"cfg-sigma-upper",
+            value=20.,
+            min_value=0.0,
+        )
+
+        guider_config = {
+            "target": "sgm.modules.diffusionmodules.guiders.SparseVanillaCFG",
+            "params": {
+                "scale": scale,
+                "sigma_lower": sigma_lower,
+                "sigma_upper": sigma_upper,
+                **additional_guider_kwargs,
+            },
+        }
+    elif guider == "ClipGuider":
+        scale = st.number_input(
+            f"cfg-scale #{key}",
+            value=options.get("cfg", 5.0),
+            min_value=0.0,
+        )
+        clip_scale = st.number_input(
+            f"cfg-clip-scale #{key}",
+            value=options.get("cfg", 5.0),
+            step=0.0001,
+            min_value=0.0,
+            max_value=100.0,
+        )
+        prompt = st.text_input("Prompt", "Unreal engine style.")
+
+        guider_config = {
+            "target": "sgm.modules.diffusionmodules.guiders.ClipGuider",
+            "params": {
+                "scale": scale,
+                "scale_clip": clip_scale/100.,
+                "prompt": prompt,
+                **additional_guider_kwargs,
+            },
+        }
+
     elif guider == "LinearPredictionGuider":
         max_scale = st.number_input(
             f"max-cfg-scale #{key}",
@@ -542,7 +597,7 @@ def do_sample(
                         assert T is not None
 
                         if isinstance(
-                            sampler.guider, (VanillaCFG, LinearPredictionGuider)
+                            sampler.guider, (SparseVanillaCFG, VanillaCFG, LinearPredictionGuider, ClipGuider)
                         ):
                             additional_model_inputs[k] = torch.zeros(
                                 num_samples[0] * 2, num_samples[1]
@@ -564,10 +619,14 @@ def do_sample(
 
                 load_model(model.denoiser)
                 load_model(model.model)
-                samples_z = sampler(denoiser, randn, cond=c, uc=uc)
-                unload_model(model.model)
-                unload_model(model.denoiser)
-
+    with precision_scope("cuda"):
+        with model.ema_scope():
+            samples_z = sampler(denoiser, randn, cond=c, uc=uc)
+            unload_model(model.model)
+            unload_model(model.denoiser)
+    with torch.no_grad():
+        with precision_scope("cuda"):
+            with model.ema_scope():
                 load_model(model.first_stage_model)
                 model.en_and_decode_n_samples_a_time = (
                     decoding_t  # Decode n frames at a time

@@ -5,6 +5,7 @@ from scripts.demo.streamlit_helpers import *
 SAVE_PATH = "outputs/demo/txt2img/"
 
 SD_XL_BASE_RATIOS = {
+    "prototype": (512,512),
     "0.5": (704, 1408),
     "0.52": (704, 1344),
     "0.57": (768, 1344),
